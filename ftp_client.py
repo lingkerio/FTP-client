@@ -219,7 +219,7 @@ class FTPClient:
             else:
                 data = file.read()
             data_socket.sendall(data)
-        data_socket.clos
+        data_socket.close()
         print(f"Uploaded {file_path}")
 
     def download(self, remote_path: str, local_path: str):
