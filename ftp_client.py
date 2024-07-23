@@ -161,16 +161,15 @@ class FTPClient:
         data_socket = self.initialize_data_socket()
 
         self.send_cmd("LIST")
-
+        print(self.control_recv_all())
         data = b""
         while True:
             part = data_socket.recv(1024)
             data += part
-            if len(part) < 1024:
+            if not part:
                 data_socket.close()
                 break
         print(data.decode())
-
         print("Listing complete")
 
     def quit(self):
@@ -315,10 +314,10 @@ class FTPClient:
 
 
 # Example usage of the FTPClient
-ftp_client = FTPClient("jyywiki.cn", 21, mode="passive")
-ftp_client.login()
+ftp_client = FTPClient("127.0.0.1", 21, mode="passive")
+ftp_client.login('test','123456')
 ftp_client.list()
-ftp_client.change_directory("os")
+ftp_client.change_directory("set")
 ftp_client.list()
-ftp_client.download_file("README.md", "./record.sh")
+ftp_client.download_file("a.txt", "./a.txt")
 ftp_client.quit()
