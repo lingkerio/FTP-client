@@ -1,59 +1,29 @@
 import socket
+import time
 import zlib
 import os
+import pdb
 
 
 class FTPClient:
-    """
-    FTP客户端类，用于管理与FTP服务器的连接和交互。
-
-    属性:
-    ip (str): FTP服务器的IP地址。
-    port (int): FTP服务器的端口号。
-    mode (str): 数据传输模式（'active'或'passive'）。
-    s (socket.socket): 用于与FTP服务器通信的套接字。
-
-    方法:
-    __init__(self, ip: str, port: int, mode="passive"): 初始化FTP客户端。
-    initialize_data_socket(self): 初始化数据传输套接字，基于模式（主动或被动）。
-    initialize_passive_socket(self): 初始化被动模式数据传输套接字。
-    initialize_active_socket(self): 初始化主动模式数据传输套接字。
-    control_recv_all(self): 接收服务器发送的所有数据。
-    send_cmd(self, cmd: str): 向FTP服务器发送命令并接收响应。
-    login(self, username: str = "anonymous", password: str = "anonymous@"): 使用用户名和密码登录FTP服务器。
-    set_transfer_mode(self, mode: str): 设置传输模式（ASCII或Binary）。
-    list(self): 请求FTP服务器列出当前目录中的文件和目录。
-    quit(self): 断开与FTP服务器的连接。
-    upload(self, file_path: str, mode: str = "Binary", compressed: bool = False): 上传文件或目录到FTP服务器。
-    upload_directory(self, directory_path: str, mode: str, compressed: bool): 递归上传目录到FTP服务器。
-    upload_file(self, file_path: str, mode: str, compressed: bool): 上传单个文件到FTP服务器。
-    download(self, remote_path: str, local_path: str): 从FTP服务器下载文件或目录。
-    download_file(self, remote_filename: str, local_path: str): 从FTP服务器下载单个文件。
-    resume_upload(self, file_path: str, start_position: int): 从特定字节偏移处恢复上传文件。
-    resume_download(self, filename: str, local_path: str, start_position: int): 从特定字节偏移处恢复下载文件。
-    change_directory(self, directory: str): 更改FTP服务器上的当前目录。
-    """
-
-    def __init__(self, ip: str, port: int, mode="passive"):
-        """
-        初始化FTP客户端。
-
-        参数:
-        ip (str): FTP服务器的IP地址。
-        port (int): FTP服务器的端口号。
-        mode (str): 数据传输模式（'active'或'passive'）。
-        """
+    def __init__(
+        self,
+        ip: str,
+        port: int,
+        mode="passive",
+        transfer_mode="ascii",
+        transfer_method="stream",
+    ):
         self.ip = ip
         self.port = port
         self.mode = mode
+        self.transfer_mode = transfer_mode
+        self.transfer_method = transfer_method
         self.s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.s.connect((ip, port))
         print(self.control_recv_all())
 
     def initialize_data_socket(self) -> socket.socket:
-        """
-        初始化数据传输套接字，基于模式（主动或被动）。
-        """
         if self.mode == "passive":
             return self.initialize_passive_socket()
         elif self.mode == "active":
@@ -62,14 +32,11 @@ class FTPClient:
             raise Exception("Invalid mode")
 
     def initialize_passive_socket(self) -> socket.socket:
-        """
-        初始化被动模式数据传输套接字。
-        """
-        max_retries = 5  # 设置最大重试次数
+        max_retries = 5
         retries = 0
         while retries < max_retries:
-            response = self.send_cmd("PASV")
-            print(response)
+            self.send_cmd("PASV")
+            response = self.control_recv_all()
             if "(" in response and ")" in response:
                 start = response.index("(") + 1
                 end = response.index(")", start)
@@ -87,22 +54,12 @@ class FTPClient:
         raise Exception("Failed to initialize passive socket after maximum retries.")
 
     def initialize_active_socket(self) -> socket.socket:
-        """
-        初始化主动模式数据传输套接字。
-        """
-
         def _find_free_port():
-            """
-            查找一个空闲端口。
-            """
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.bind(("", 0))
                 return s.getsockname()[1]
 
         def _ip_to_port():
-            """
-            将IP地址转换为PORT命令的参数格式。
-            """
             ip_parts = self.ip.split(".")
             return (
                 ",".join(ip_parts) + f",{self.data_port >> 8},{self.data_port & 0xFF}"
@@ -119,9 +76,6 @@ class FTPClient:
         return data_socket
 
     def control_recv_all(self) -> str:
-        """
-        接收服务器发送的所有数据，直到没有更多数据为止。
-        """
         data = b""
         while True:
             part = self.s.recv(1024)
@@ -130,194 +84,129 @@ class FTPClient:
                 break
         return data.decode()
 
-    def send_cmd(self, cmd: str) -> str:
-        """
-        向FTP服务器发送命令并接收响应。
-
-        参数:
-        cmd (str): 要发送的命令。
-
-        返回:
-        str: 服务器的响应。
-        """
+    def send_cmd(self, cmd: str):
         self.s.send(cmd.encode() + b"\r\n")
-        return self.control_recv_all()
+        time.sleep(0.01)
+        return
 
     def login(self, username: str = "anonymous", password: str = "anonymous@"):
-        """
-        使用用户名和密码登录FTP服务器。
-
-        参数:
-        username (str): 用户名。
-        password (str): 密码。
-        """
-        print(self.send_cmd("USER " + username))
-        print(self.send_cmd("PASS " + password))
+        self.send_cmd("USER " + username)
+        print(self.control_recv_all())
+        self.send_cmd("PASS " + password)
+        print(self.control_recv_all())
 
     def list(self):
-        """
-        请求FTP服务器列出当前目录中的文件和目录。
-        """
-        data_socket = self.initialize_data_socket()
+        try:
+            data_socket = self.initialize_data_socket()
+            self.send_cmd("LIST")
 
-        self.send_cmd("LIST")
+            response = self.control_recv_all().split("\r\n")
+            print(response[0])
+
+            data = b""
+            while True:
+                part = data_socket.recv(1024)
+                data += part
+                if len(part) < 1024:
+                    data_socket.close()
+                    break
+            print(data.decode())
+            print("Listing complete")
+            if len(response) == 2:
+                print(self.control_recv_all())
+            else:
+                print(response[1])
+        except socket.error as e:
+            print(f"Socket error: {e}")
+            data_socket.close()
+
+    def change_dir(self, path: str):
+        self.send_cmd("CWD " + path)
         print(self.control_recv_all())
-        data = b""
-        while True:
-            part = data_socket.recv(1024)
-            data += part
-            if not part:
-                data_socket.close()
-                break
-        print(data.decode())
-        print("Listing complete")
+
+    def set_transfer_mode(self, transfer_mode: str):
+        if transfer_mode not in ["binary", "text"]:
+            raise ValueError("Invalid transfer mode. Use 'binary' or 'text'.")
+        self.transfer_mode = transfer_mode
+        cmd = "TYPE I" if transfer_mode == "binary" else "TYPE A"
+        self.send_cmd(cmd)
+        print(self.control_recv_all())
+
+    def set_transfer_method(self, transfer_method: str):
+        if transfer_method not in ["stream", "block", "compressed"]:
+            raise ValueError(
+                "Invalid transfer method. Use 'stream', 'block', or 'compressed'."
+            )
+        self.transfer_method = transfer_method
+        cmd = None
+        if transfer_method == "stream":
+            cmd = "MODE S"
+        elif transfer_method == "block":
+            cmd = "MODE B"
+        else:
+            cmd = "MODE C"
+        self.send_cmd(cmd)
+        print(self.control_recv_all())
+
+    def download(self, filename: str):
+        try:
+            data_socket = self.initialize_data_socket()
+            self.send_cmd("RETR " + filename)
+            response = self.control_recv_all().split("\r\n")
+
+            print(response[0])
+            if response[0].startswith("550"):
+                return
+
+            with open(filename, "wb") as f:
+                data = b""
+                while True:
+                    part = data_socket.recv(1024)
+                    data += part
+                    if len(part) < 1024:
+                        data_socket.close()
+                        break
+                f.write(data)
+            print(f"Downloaded {filename}")
+            if len(response) == 2:
+                print(self.control_recv_all())
+            else:
+                print(response[1])
+        except socket.error as e:
+            print(f"Socket error: {e}")
+            data_socket.close()
+
+    def upload(self, filename: str):
+        """
+        上传文件到服务器，支持分片上传。
+
+        Args:
+            filename: 要上传的文件名。
+            chunk_size: 每次上传的块大小，默认1024字节。
+        """
+        try:
+            data_socket = self.initialize_data_socket()
+            self.send_cmd("STOR " + filename)
+            response = self.control_recv_all()
+            if response.startswith("550"):
+                return
+            with open(filename, "rb") as f:
+                file_content = f.read()
+                data_socket.send(file_content)
+            print(f"Uploaded {filename}")
+        except socket.error as e:
+            print(f"Socket error: {e}")
+        finally:
+            data_socket.close()
 
     def quit(self):
-        """
-        断开与FTP服务器的连接。
-        """
-        print(self.send_cmd("QUIT"))
-        print(self.control_recv_all())
+        self.send_cmd("QUIT")
         self.s.close()
 
-    def upload(self, file_path: str, mode: str = "Binary", compressed: bool = False):
-        """
-        上传文件或目录到FTP服务器。
-        """
-        if os.path.isdir(file_path):
-            self.upload_directory(file_path, mode, compressed)
-        else:
-            self.upload_file(file_path, mode, compressed)
 
-    def upload_directory(self, directory_path: str, mode: str, compressed: bool):
-        """
-        递归上传目录到FTP服务器。
-        """
-        for item in os.listdir(directory_path):
-            local_path = os.path.join(directory_path, item)
-            if os.path.isdir(local_path):
-                self.send_cmd(f"MKD {item}")
-                self.send_cmd(f"CWD {item}")
-                self.upload_directory(local_path, mode, compressed)
-                self.send_cmd("CDUP")
-            else:
-                self.upload_file(local_path, mode, compressed)
-
-    def upload_file(self, file_path: str, mode: str, compressed: bool):
-        """
-        上传单个文件到FTP服务器。
-        """
-        data_socket = self.initialize_data_socket()
-
-        filename = os.path.basename(file_path)
-        self.send_cmd(f"STOR {filename}")
-
-        with open(file_path, "rb") as file:
-            if compressed:
-                data = zlib.compress(file.read())
-            else:
-                data = file.read()
-            data_socket.sendall(data)
-        data_socket.close()
-        print(f"Uploaded {file_path}")
-
-    def download(self, remote_path: str, local_path: str):
-        """
-        下载文件或目录从FTP服务器。
-        """
-        self.send_cmd(f"CWD {remote_path}")  # Change directory remotely
-        listing = self.send_cmd("LIST")  # List items in the directory
-        lines = listing.splitlines()
-        for line in lines:
-            parts = line.split()
-            name = parts[-1]
-            if line.startswith("d"):  # Directory
-                new_local_path = os.path.join(local_path, name)
-                os.makedirs(new_local_path, exist_ok=True)
-                self.download(name, new_local_path)  # Recursively download
-            else:  # File
-                self.download_file(name, os.path.join(local_path, name))
-        self.send_cmd("CDUP")  # Go back to the parent directory
-
-    def download_file(self, remote_filename: str, local_path: str):
-        """
-        从FTP服务器下载单个文件。
-        """
-        # 确保已经进入被动模式并且数据连接已经建立
-        data_socket = self.initialize_data_socket()
-
-        # 发送下载文件的命令
-        self.send_cmd(f"RETR {remote_filename}")
-
-        # 从数据套接字接收文件内容并写入本地文件
-
-        with open(local_path, "wb") as file:
-            while True:
-                data = data_socket.recv(1024)
-                if not data:
-                    data_socket.close()
-                    break
-                file.write(data)
-
-        # 检查传输是否成功完成
-        transfer_complete_response = self.control_recv_all()
-        print(transfer_complete_response)  # 打印传输完成后的响应，以便于调试
-        print(f"Downloaded {remote_filename} to {local_path}")
-
-    def resume_upload(self, file_path: str, start_position: int):
-        """
-        从特定字节偏移处恢复上传文件。
-        """
-        data_socket = self.initialize_data_socket()
-
-        filename = os.path.basename(file_path)
-        self.send_cmd(f"REST {start_position}")
-        self.send_cmd(f"STOR {filename}")
-
-        with open(file_path, "rb") as file:
-            file.seek(start_position)
-            while True:
-                data = file.read(1024)
-                if not data:
-                    data_socket.close()
-                    break
-                data_socket.sendall(data)
-
-        print(f"Resumed upload of {file_path}")
-
-    def resume_download(self, filename: str, local_path: str, start_position: int):
-        """
-        从特定字节偏移处恢复下载文件。
-        """
-        self.send_cmd(f"REST {start_position}")
-        self.send_cmd(f"RETR {filename}")
-        data_socket = self.initialize_data_socket()
-
-        with open(local_path, "ab") as file:
-            while True:
-                data = data_socket.recv(1024)
-                if not data:
-                    data_socket.close()
-                    break
-                file.write(data)
-
-        print(f"Resumed download of {filename} to {local_path}")
-
-    def change_directory(self, directory: str):
-        """
-        更改FTP服务器上的当前目录。
-
-        参数:
-        directory (str): 目标目录。
-        """
-        print(self.send_cmd(f"CWD {directory}"))
-
-
-# Example usage of the FTPClient
-ftp_client = FTPClient("127.0.0.1", 21, mode="passive")
-ftp_client.login('test','123456')
+ftp_client = FTPClient("127.0.0.1", 21)
+ftp_client.login()
+ftp_client.change_dir("os")
 ftp_client.list()
-ftp_client.change_directory("set")
-ftp_client.list()
-ftp_client.download_file("a.txt", "./a.txt")
+ftp_client.upload("base.py")
 ftp_client.quit()
