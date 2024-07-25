@@ -176,6 +176,40 @@ class FTPClient:
             print(f"Socket error: {e}")
             data_socket.close()
 
+    def resume_download(self, filename: str):
+        """
+        从特定字节偏移处恢复下载文件。
+        """
+        try:
+            data_socket = self.initialize_data_socket()
+            '''
+            获取本地文件已下载的字节数
+            '''
+            start_position = os.stat(filename).st_size
+            self.send_cmd(f"REST {start_position}")
+            print(self.control_recv_all())
+
+            self.send_cmd("RETR " + filename)
+            response = self.control_recv_all().split("\r\n")
+
+            print(response[0])
+            if response[0].startswith("550"):
+                return
+
+            with open(filename, "ab") as file:
+                while True:
+                    data = data_socket.recv(1024)
+                    if not data:
+                        data_socket.close()
+                        break
+                    file.write(data)
+
+            print(f"Resumed download of {filename}")
+        except socket.error as e:
+            print(f"Socket error: {e}")
+            data_socket.close()
+
+
     def upload(self, filename: str):
         """
         上传文件到服务器，支持分片上传。
@@ -191,6 +225,35 @@ class FTPClient:
             if response.startswith("550"):
                 return
             with open(filename, "rb") as f:
+                file_size = os.stat(filename).st_size
+                file_content = f.read()
+                data_socket.send(file_content)
+            print(f"Uploaded {filename}")
+        except socket.error as e:
+            print(f"Socket error: {e}")
+        finally:
+            data_socket.close()
+
+
+
+    def resume_upload(self, filename: str):
+        """
+        断点续传，继续将文件上传服务器
+        """
+        try:
+            data_socket = self.initialize_data_socket()
+            self.send_cmd("SIZE " + filename)
+            file_size=self.control_recv_all()
+            '''
+            self.send_cmd("APPE " + filename)
+            print(self.control_recv_all())
+            '''
+            self.send_cmd("APPE " + filename)
+            response = self.control_recv_all()
+            if response.startswith("550"):
+                return
+            with open(filename, "rb") as f:
+                f.seek(int(file_size.split()[1]))
                 file_content = f.read()
                 data_socket.send(file_content)
             print(f"Uploaded {filename}")
@@ -205,8 +268,15 @@ class FTPClient:
 
 
 ftp_client = FTPClient("127.0.0.1", 21)
-ftp_client.login()
-ftp_client.change_dir("os")
+ftp_client.login('test','123456')
 ftp_client.list()
-ftp_client.upload("base.py")
+#ftp_client.change_dir("set")
+ftp_client.list()
+
+#ftp_client.download("test.png")
+#ftp_client.resume_download("test.png")
+
+#ftp_client.upload('test.png')
+ftp_client.resume_upload('test.png')
+
 ftp_client.quit()
