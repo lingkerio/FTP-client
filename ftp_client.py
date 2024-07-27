@@ -1,8 +1,6 @@
 import socket
 import time
-import zlib
 import os
-import pdb
 
 
 class FTPClient:
@@ -250,7 +248,6 @@ def test_resume_download():
 
     # Step 2: Initiate the download of alipay_record_20240707_202209.csv
     try:
-        # pdb.set_trace()
         print("Starting download of alipay_record_20240707_202209.csv...")
         data_socket = client.initialize_data_socket()
         client.send_cmd("RETR alipay_record_20240707_202209.csv")
