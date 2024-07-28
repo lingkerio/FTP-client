@@ -120,7 +120,12 @@ class FTPClient:
 
     def change_dir(self, path: str):
         self.send_cmd("CWD " + path)
-        print(self.control_recv_all())
+        response = self.control_recv_all()
+        if not response.startswith("250"):
+            raise Exception(
+                f"Failed to change directory to {path}. Server response: {response}"
+            )
+        print(response)
 
     def set_transfer_mode(self, transfer_mode: str):
         if transfer_mode not in ["binary", "text"]:
@@ -128,7 +133,12 @@ class FTPClient:
         self.transfer_mode = transfer_mode
         cmd = "TYPE I" if transfer_mode == "binary" else "TYPE A"
         self.send_cmd(cmd)
-        print(self.control_recv_all())
+        response = self.control_recv_all()
+        if not response.startswith("200"):
+            raise Exception(
+                f"Failed to set transfer mode to {transfer_mode}. Server response: {response}"
+            )
+        print(response)
 
     def set_transfer_method(self, transfer_method: str):
         if transfer_method not in ["stream", "block", "compressed"]:
@@ -144,20 +154,73 @@ class FTPClient:
         else:
             cmd = "MODE C"
         self.send_cmd(cmd)
-        print(self.control_recv_all())
+        response = self.control_recv_all()
+        if not response.startswith("200"):
+            raise Exception(
+                f"Failed to set transfer method to {transfer_method}. Server response: {response}"
+            )
+        print(response)
+
+    def recv_all_from_data_socket(self, data_socket):
+        data = []
+        while True:
+            part = data_socket.recv(1024)
+            if not part:
+                break
+            data.append(part.decode("utf-8"))
+        return "".join(data)
 
     def download(self, remote_filename: str, local_filename: str | None = None):
         if local_filename is None:
             local_filename = remote_filename
 
+        try:
+            # 检查远程文件是否是目录
+            self.send_cmd(f"MLST {remote_filename}")
+            response = self.control_recv_all().split("\r\n")
+            if any("type=dir" in line for line in response):
+                # 如果是目录，创建本地目录
+                if not os.path.exists(local_filename):
+                    os.makedirs(local_filename)
+
+                # 使用MLSD命令列出目录内容\
+                data_socket = self.initialize_data_socket()
+                self.send_cmd(f"MLSD {remote_filename}")
+                print(self.control_recv_all())
+                response = self.recv_all_from_data_socket(data_socket).split("\r\n")
+                data_socket.close()
+
+                for line in response:
+                    if line:
+                        parts = line.split(";")
+                        name = parts[-1].strip()
+                        if "type=dir" in parts:
+                            self.download(
+                                f"{remote_filename}/{name}", f"{local_filename}/{name}"
+                            )
+                        else:
+                            self._download_file(
+                                f"{remote_filename}/{name}", f"{local_filename}/{name}"
+                            )
+            else:
+                # 如果是文件，直接下载文件
+                self._download_file(remote_filename, local_filename)
+        except Exception as e:
+            print(f"Download error: {e}")
+
+    def _download_file(self, remote_filename: str, local_filename: str):
         local_file_size = 0
         if os.path.exists(local_filename):
             local_file_size = os.path.getsize(local_filename)
+        else:
+            local_file_size = -1  # 本地文件不存在
 
         try:
             data_socket = self.initialize_data_socket()
 
-            if local_file_size > 0:
+            if local_file_size == 0:
+                print(f"{local_filename} exists but is empty. Downloading from the beginning.")
+            elif local_file_size > 0:
                 self.send_cmd(f"REST {local_file_size}")
                 print(self.control_recv_all())
 
@@ -166,6 +229,9 @@ class FTPClient:
 
             print(response[0])
             if response[0].startswith("550"):
+                print(
+                    f"Failed to retrieve {remote_filename}. Server response: {response[0]}"
+                )
                 return
 
             mode = "ab" if local_file_size > 0 else "wb"
@@ -189,6 +255,24 @@ class FTPClient:
         if remote_filename is None:
             remote_filename = local_filename
 
+        try:
+            if os.path.isdir(local_filename):
+                self.send_cmd(f"MKD {remote_filename}")
+                response = self.control_recv_all()
+                if not response.startswith("257"):
+                    print(
+                        f"Failed to create directory {remote_filename}. Server response: {response}"
+                    )
+                for item in os.listdir(local_filename):
+                    local_path = os.path.join(local_filename, item)
+                    remote_path = f"{remote_filename}/{item}"
+                    self.upload(local_path, remote_path)
+            else:
+                self._upload_file(local_filename, remote_filename)
+        except Exception as e:
+            print(f"Upload error: {e}")
+
+    def _upload_file(self, local_filename: str, remote_filename: str):
         local_file_size = os.path.getsize(local_filename)
         remote_file_size = 0
         data_socket = None
@@ -199,25 +283,36 @@ class FTPClient:
 
             if response.startswith("213"):
                 remote_file_size = int(response.split()[1])
+            elif response.startswith("550"):
+                # 远程文件不存在
+                remote_file_size = -1
 
-            # If the remote file size matches the local file size, skip uploading
+            # 如果远程文件大小为0，说明文件存在但为空
+            if remote_file_size == 0:
+                print(f"{remote_filename} exists on the server but is empty. Uploading from the beginning.")
+                remote_file_size = 0
+
+            # 如果远程文件大小与本地文件大小相同，跳过上传
             if remote_file_size == local_file_size:
                 print(
                     f"{remote_filename} already exists on the server with the same size. Skipping upload."
                 )
                 return
 
-            # If the remote file size is less than the local file size, resume uploading
+            # 初始化数据通道
             data_socket = self.initialize_data_socket()
 
-            if remote_file_size < local_file_size:
+            # 如果远程文件大小小于本地文件大小，进行断点续传
+            if remote_file_size > 0 and remote_file_size < local_file_size:
                 self.send_cmd(f"REST {remote_file_size}")
                 print(self.control_recv_all())
 
             self.send_cmd("STOR " + remote_filename)
             response = self.control_recv_all()
             if response.startswith("550"):
-                print(f"Failed to upload {remote_filename}. Server response: {response}")
+                print(
+                    f"Failed to upload {remote_filename}. Server response: {response}"
+                )
                 return
 
             with open(local_filename, "rb") as f:
@@ -239,88 +334,36 @@ class FTPClient:
         self.s.close()
 
 
-def test_resume_download():
-    # Step 1: Connect and login to the FTP server
-    client = FTPClient(ip="127.0.0.1", port=21)
-    client.login(username="anonymous", password="anonymous@")
-    client.change_dir("账单")
-    client.list()
+# def test_resume_download():
+#     # Step 1: Connect and login to the FTP server
+#     client = FTPClient(ip="127.0.0.1", port=21)
+#     client.login(username="anonymous", password="anonymous@")
+#     client.list()
 
-    # Step 2: Initiate the download of alipay_record_20240707_202209.csv
-    try:
-        print("Starting download of alipay_record_20240707_202209.csv...")
-        data_socket = client.initialize_data_socket()
-        client.send_cmd("RETR alipay_record_20240707_202209.csv")
+    
+#     client.download("src", "srctest")
 
-        with open("alipay_record_20240707_202209.csv", "wb") as f:
-            for _ in range(5):  # Intentionally download only a part of the file
-                part = data_socket.recv(1024)
-                if not part:
-                    break
-                f.write(part)
-        print("Intentional disconnection to simulate interruption.")
-        data_socket.close()  # Close the socket to simulate an interruption
+#     client.quit()
 
-    except Exception as e:
-        print(f"Error during initial download: {e}")
-
-    finally:
-        client.quit()  # Disconnect from the server
-
-    # Step 3: Reconnect and resume the download
-    print("Reconnecting to resume download...")
-    client = FTPClient(ip="127.0.0.1", port=21)
-    client.login(username="anonymous", password="anonymous@")
-    client.change_dir("账单")
-    client.download("alipay_record_20240707_202209.csv", "alipay_record_resume.csv")
-
-    client.quit()
-
-    print("Download resumed and completed successfully.")
+#     print("Download resumed and completed successfully.")
 
 
-def test_resume_upload():
-    # Step 1: Connect and login to the FTP server
-    client = FTPClient(ip="127.0.0.1", port=21)
-    client.login(username="anonymous", password="anonymous@")
-    client.change_dir("账单")
+# def test_resume_upload():
+#     # Step 1: Connect and login to the FTP server
+#     client = FTPClient(ip="127.0.0.1", port=21)
+#     client.login(username="anonymous", password="anonymous@")
+#     client.change_dir("账单")
 
-    # Create a test file to upload
-    test_filename = "Utility.code-workspace"
+#     # Create a test file to upload
+#     test_filename = "src"
 
-    try:
-        # Step 2: Initiate the upload of Utility.code-workspace
-        print(f"Starting upload of {test_filename}...")
-        data_socket = client.initialize_data_socket()
-        client.send_cmd("STOR " + test_filename)
+#     client.upload(test_filename, "src_test")
 
-        with open(test_filename, "rb") as f:
-            for _ in range(5):  # Intentionally upload only a part of the file
-                part = f.read(1024)
-                if not part:
-                    break
-                data_socket.send(part)
-        print("Intentional disconnection to simulate interruption.")
-        data_socket.close()  # Close the socket to simulate an interruption
+#     client.quit()
 
-    except Exception as e:
-        print(f"Error during initial upload: {e}")
-
-    finally:
-        client.quit()  # Disconnect from the server
-
-    # Step 3: Reconnect and resume the upload
-    print("Reconnecting to resume upload...")
-    client = FTPClient(ip="127.0.0.1", port=21)
-    client.login(username="anonymous", password="anonymous@")
-    client.change_dir("账单")
-    client.upload(test_filename, "upload_test_resume.txt")
-
-    client.quit()
-
-    print("Upload resumed and completed successfully.")
+#     print("Upload resumed and completed successfully.")
 
 
-# Run the test
-test_resume_download()
-test_resume_upload()
+# # Run the test
+# test_resume_download()
+# # test_resume_upload()
