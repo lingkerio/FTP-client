@@ -1,4 +1,3 @@
-import sys
 from PyQt5.QtWidgets import (
     QApplication,
     QWidget,
@@ -16,13 +15,20 @@ from PyQt5.QtWidgets import (
     QHeaderView,
     QCheckBox,
     QMessageBox,
+    QFileDialog,
+    QMenu,
+    QTextEdit,
+    QDialog
 )
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QIcon, QStandardItemModel, QStandardItem
+from PyQt5.QtCore import Qt, pyqtSignal, QDir, QModelIndex, QDateTime,QUrl
+from PyQt5.QtGui import QIcon, QStandardItemModel, QStandardItem,QDesktopServices
 import os
+import sys
+
 
 # 导入后端 FTP 客户端
-from backend import FTPClient as BackendFTPClient
+from back import FTPClient as BackendFTPClient
+from remote import RemoteFileDialog as RemoteFileDialog # type: ignore
 
 
 class FTPClient(QWidget):
@@ -34,10 +40,11 @@ class FTPClient(QWidget):
         self.initUI()
         self.backend_ftp_client = None  # 后端 FTP 客户端实例
         self.remote_files_info = []  # 存储远程文件的信息
+        self.is_connected = False  # 连接状态
 
     def initUI(self):
         self.setWindowTitle("FTP 客户端")
-        self.setGeometry(100, 100, 900, 600)
+        self.setGeometry(100, 100, 1200, 800)  # 增大窗口尺寸以显示日志
 
         # 顶部连接栏
         self.host_input = QLineEdit(self)
@@ -86,15 +93,19 @@ class FTPClient(QWidget):
 
         # 文件浏览区域
         self.local_model = QFileSystemModel()
-        self.local_model.setRootPath("")
+        self.local_model.setRootPath(QDir.rootPath())  # 设置根目录
         self.local_view = QTreeView()
         self.local_view.setModel(self.local_model)
-        self.local_view.setRootIndex(self.local_model.index(""))
+        self.local_view.setRootIndex(self.local_model.index(QDir.rootPath()))
+        self.local_view.setSortingEnabled(True)  # 启用排序功能
 
         self.remote_view = QTreeView()
         self.model = QStandardItemModel()
         self.remote_view.setModel(self.model)
-        self.model.setHorizontalHeaderLabels(["名称", "大小", "类型", "修改日期"])
+        self.model.setHorizontalHeaderLabels([
+            "类型和权限", "硬链接数", "所有者", "所有组", "大小", "修改日期和时间", "名称"
+        ])
+        self.remote_view.setSortingEnabled(True)  # 启用排序功能
 
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(self.local_view)
@@ -107,12 +118,18 @@ class FTPClient(QWidget):
         # 状态栏
         self.status_bar = QStatusBar()
 
+        # 日志输出区域
+        self.log_output = QTextEdit(self)
+        self.log_output.setReadOnly(True)  # 日志只读
+        self.log_output.setStyleSheet("background-color: #f5f5f5;")  # 设置背景色
+
         # 主布局
         main_layout = QVBoxLayout()
         main_layout.addLayout(top_layout)
         main_layout.addLayout(search_layout)
         main_layout.addWidget(self.toolbar)
         main_layout.addWidget(splitter)
+        main_layout.addWidget(self.log_output)  # 添加日志区域
         main_layout.addWidget(self.status_bar)
 
         self.setLayout(main_layout)
@@ -129,6 +146,16 @@ class FTPClient(QWidget):
 
         # 信号连接到状态栏更新函数
         self.connection_status_signal.connect(self.update_status_bar)
+
+        # 添加右键菜单
+        self.remote_view.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.remote_view.customContextMenuRequested.connect(self.open_context_menu)
+        
+        # 为左侧文件视图添加鼠标点击事件
+        self.local_view.clicked.connect(self.on_local_view_clicked)
+        self.local_view.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.local_view.customContextMenuRequested.connect(self.show_upload_dialog)
+
 
     def add_tool_actions(self):
         upload_action = QAction(QIcon("C:\\Users\\86151\\Desktop\\icons\\upload.png"), "上传", self)
@@ -148,129 +175,10 @@ class FTPClient(QWidget):
         self.toolbar.addAction(refresh_action)
         self.toolbar.addAction(delete_action)
 
-
-    def connect_to_ftp(self):
-        host = self.host_input.text()
-        port = int(self.port_input.text())
-        username = self.user_input.text()
-        password = self.pass_input.text()
-
-        try:
-            # 创建后端 FTP 客户端实例
-            self.backend_ftp_client = BackendFTPClient(ip=host, port=port)
-            # 执行连接和登录
-            self.backend_ftp_client.connect()
-            self.backend_ftp_client.login(username=username, password=password)
-            # 发出连接成功信号
-            self.connection_status_signal.emit("连接成功")
-            self.refresh_remote_files()  # 刷新远程文件列表
-        except Exception as e:
-            # 发出连接失败信号
-            self.connection_status_signal.emit(f"连接失败: {str(e)}")
-
-    def refresh_remote_files(self):
-        if not self.backend_ftp_client:
-            QMessageBox.warning(self, "错误", "未连接到任何 FTP 服务器")
-            return
-
-        try:
-            files_info = self.backend_ftp_client.list()  # 获取远程文件列表
-            self.model.removeRows(0, self.model.rowCount())
-            
-            # 遍历并显示远程文件信息
-            for file_info in files_info:
-                name_item = QStandardItem(file_info['name'])
-                size_item = QStandardItem(str(file_info['size']))
-                type_item = QStandardItem(file_info['type'])
-                date_item = QStandardItem(file_info['date_modified'])
-
-                self.model.appendRow([name_item, size_item, type_item, date_item])
-        except Exception as e:
-            QMessageBox.critical(self, "错误", f"无法刷新远程文件列表: {str(e)}")
-
-    def download_file(self):
-        if not self.backend_ftp_client:
-            QMessageBox.warning(self, "错误", "未连接到任何 FTP 服务器")
-            return
-
-        selected_indexes = self.remote_view.selectionModel().selectedRows()
-        if not selected_indexes:
-            QMessageBox.warning(self, "错误", "未选择任何要下载的文件")
-            return
-
-        for index in selected_indexes:
-            file_name = self.model.itemFromIndex(index).text()
-            local_path = os.path.join(self.local_model.rootPath(), file_name)
-
-            try:
-                self.backend_ftp_client.download(remote_path=file_name, local_path=local_path)
-                QMessageBox.information(self, "成功", f"成功下载 {file_name}")
-            except Exception as e:
-                QMessageBox.critical(self, "错误", f"下载 {file_name} 失败: {str(e)}")
-
-
-    def delete_file(self):
-        if not self.backend_ftp_client:
-            QMessageBox.warning(self, "错误", "未连接到任何 FTP 服务器")
-            return
-
-        selected_indexes = self.remote_view.selectionModel().selectedRows()
-        if not selected_indexes:
-            QMessageBox.warning(self, "错误", "未选择任何要删除的文件")
-            return
-
-        for index in selected_indexes:
-            file_name = self.model.itemFromIndex(index).text()
-
-            try:
-                self.backend_ftp_client.delete(file_name)
-                self.model.removeRow(index.row())
-                QMessageBox.information(self, "成功", f"成功删除 {file_name}")
-            except Exception as e:
-                QMessageBox.critical(self, "错误", f"删除 {file_name} 失败: {str(e)}")
-
-
-    def upload_file(self):
-        if not self.backend_ftp_client:
-            QMessageBox.warning(self, "错误", "未连接到任何 FTP 服务器")
-            return
-
-        selected_indexes = self.local_view.selectionModel().selectedRows()
-        if not selected_indexes:
-            QMessageBox.warning(self, "错误", "未选择任何要上传的文件")
-            return
-
-        for index in selected_indexes:
-            file_path = self.local_model.filePath(index)
-            file_name = os.path.basename(file_path)
-
-            try:
-                self.backend_ftp_client.upload(local_path=file_path, remote_path=file_name)
-                QMessageBox.information(self, "成功", f"成功上传 {file_name}")
-            except Exception as e:
-                QMessageBox.critical(self, "错误", f"上传 {file_name} 失败: {str(e)}")
-
-    def search_local_files(self):
-        search_term = self.search_input.text().lower()
-        self.local_view.setRootIndex(self.local_model.index(""))
-        self.local_view.setCurrentIndex(self.local_model.index(""))
-
-        def search_recursively(index):
-            if not index.isValid():
-                return
-
-            file_name = self.local_model.fileName(index).lower()
-            if search_term in file_name:
-                self.local_view.expand(index)
-
-            for row in range(self.local_model.rowCount(index)):
-                child_index = self.local_model.index(row, 0, index)
-                search_recursively(child_index)
-
-        search_recursively(self.local_model.index(""))
-
-    def sort_files(self, logical_index):
-        self.remote_view.sortByColumn(logical_index, Qt.AscendingOrder)
+        # 在工具栏中添加记录日志的操作
+        log_action = QAction(QIcon('C:\\Users\\86151\\Desktop\\icons\\log.png'), '查看日志', self)
+        log_action.triggered.connect(self.show_log)
+        self.toolbar.addAction(log_action)
 
     def toggle_anonymous(self, state):
         if state == Qt.Checked:
@@ -288,6 +196,13 @@ class FTPClient(QWidget):
 
     def update_status_bar(self, message):
         self.status_bar.showMessage(message)
+        self.log(message)  # 在日志中记录状态更新
+
+    def log(self, message):
+        # 日志消息格式化，添加时间戳
+        log_message = f"[{QDateTime.currentDateTime().toString('yyyy-MM-dd HH:mm:ss')}] {message}"
+        self.log_output.append(log_message)
+        print(log_message)  # 在控制台输出日志（可选）
 
     def get_stylesheet(self):
         return """
@@ -309,12 +224,258 @@ class FTPClient(QWidget):
         QStatusBar {
             background-color: #f0f0f0;
             border-top: 1px solid #ccc;
-
+        }
+        QTextEdit {
+            border: 1px solid #ccc;
+            background-color: #f5f5f5;
         }
         """
 
+    def connect_to_ftp(self):
+        host = self.host_input.text()
+        port = int(self.port_input.text())
+        username = self.user_input.text()
+        password = self.pass_input.text()
+        anonymous = self.anonymous_checkbox.isChecked()
+
+        if anonymous:
+            username = "anonymous"
+            password = "anonymous@"
+
+        try:
+            self.backend_ftp_client = BackendFTPClient(host, port)
+            self.backend_ftp_client.login(username, password)
+            self.connection_status_signal.emit("连接成功")
+            self.is_connected = True
+            self.refresh_remote_files()
+            self.log(f"连接到FTP服务器 {host}:{port} 成功。")  # 记录连接成功日志
+        except Exception as e:
+            self.connection_status_signal.emit(f"连接失败: {str(e)}")
+            self.log(f"连接失败: {str(e)}")  # 记录连接失败日志
+
+   
+
+    def refresh_remote_files(self):
+        if self.backend_ftp_client and self.is_connected:
+            try:
+                # 从后端FTP客户端获取远程文件列表数据
+                raw_data = self.backend_ftp_client.list()
+
+                # 检查返回的数据是否为None或空字符串
+                if raw_data is None or raw_data.strip() == '':
+                    self.log("从FTP服务器接收到的数据为空。")
+                    self.connection_status_signal.emit("从FTP服务器接收到的数据为空。")
+                    return
+
+                # 清空当前模型以准备更新
+                self.model.clear()
+
+                # 解析每行数据
+                lines = raw_data.splitlines()
+                for line in lines:
+                    file_info = self.parse_ftp_list_line(line)
+                    if file_info:
+                        # 使用文件信息创建QStandardItem并添加到模型
+                        permissions, num_links, owner, group, size, mod_time_str, name = file_info
+                        mod_time = QDateTime.fromString(f"{mod_time_str} {QDateTime.currentDateTime().toString('yyyy')}", 'MMM dd HH:mm')
+                        permissions_item = QStandardItem(permissions)
+                        num_links_item = QStandardItem(str(num_links))
+                        owner_item = QStandardItem(owner)
+                        group_item = QStandardItem(group)
+                        size_item = QStandardItem(str(size))
+                        mod_time_item = QStandardItem(mod_time.toString('yyyy-MM-dd HH:mm'))
+                        name_item = QStandardItem(name)
+
+                        # 将文件信息作为一行添加到模型
+                        self.model.appendRow([permissions_item, num_links_item, owner_item, group_item, size_item, mod_time_item, name_item])
+
+                self.connection_status_signal.emit("远程文件列表刷新成功。")
+                self.log("远程文件列表刷新成功。")
+
+            except Exception as e:
+                # 记录异常信息
+                error_message = f"刷新远程文件失败: {str(e)}"
+                self.connection_status_signal.emit(error_message)
+                self.log(error_message)
+                # 如果可能，打印异常的堆栈跟踪
+                import traceback
+                self.log(traceback.format_exc())
+
+    def parse_ftp_list_line(self, line):
+    # 解析从FTP服务器接收到的单行文件列表信息
+     parts = line.split()
+     if len(parts) < 8:  # 确保有足够的部分进行解析
+        return None  # 跳过格式不正确的行
+
+     permissions = parts[0]
+     num_links = int(parts[1])
+     owner = parts[2]
+     group = parts[3]
+     size_str = parts[4]
+     size = int(size_str) if size_str.isdigit() else None  # 尝试将大小转换为整数
+
+    # 处理日期和时间
+     month_day_time = parts[5].split()  # 分割日期和时间
+     month = month_day_time[0]
+     day = month_day_time[1]
+     time = ' '.join(month_day_time[2:]) if len(month_day_time) > 2 else '00:00'
+
+    # 从剩余的部分中提取文件名，假设文件名可能包含空格
+     name_parts = parts[6:]  # 从第7个元素开始
+     name = ' '.join(name_parts).strip()
+
+     return permissions, num_links, owner, group, size, f"{month} {day} {time}", name
+
+
+    def upload_file(self):
+        if self.backend_ftp_client and self.is_connected:
+            local_file_path = QFileDialog.getOpenFileName(self, "选择要上传的文件")[0]
+            if local_file_path:
+                file_name = os.path.basename(local_file_path)
+                try:
+                    self.backend_ftp_client.upload(local_file_path, file_name)
+                    self.connection_status_signal.emit(f"上传成功: {file_name}")
+                    self.refresh_remote_files()  # 上传成功后刷新远程文件列表
+                    self.log(f"文件上传成功: {file_name}")  # 记录上传日志
+                except Exception as e:
+                    error_message = f"上传失败: {str(e)}"
+                    self.connection_status_signal.emit(error_message)
+                    self.log(error_message)  # 记录上传失败日志
+
+    def download_file(self):
+     if self.backend_ftp_client and self.is_connected:
+        dialog = RemoteFileDialog(self.backend_ftp_client, self)
+        if dialog.exec_() == QDialog.Accepted:
+            remote_file = dialog.get_selected_file()
+            if remote_file:
+                save_path = QFileDialog.getSaveFileName(self, "选择保存位置", remote_file)[0]
+                if save_path:
+                    try:
+                        self.backend_ftp_client.download(remote_file, save_path)
+                        self.connection_status_signal.emit(f"下载成功: {remote_file}")
+                        self.log(f"文件下载成功: {remote_file}")
+                    except Exception as e:
+                        error_message = f"下载失败: {str(e)}"
+                        self.connection_status_signal.emit(error_message)
+                        self.log(error_message)
+
+
+
+    def search_local_files(self):
+        search_text = self.search_input.text().strip()
+        if search_text:
+            root_index = self.local_model.index(QDir.rootPath())
+            self.local_view.setRootIndex(root_index)
+
+            for row in range(self.local_model.rowCount(root_index)):
+                index = self.local_model.index(row, 0, root_index)
+                file_name = self.local_model.fileName(index)
+                if search_text.lower() in file_name.lower():
+                    self.local_view.setCurrentIndex(index)
+                    self.local_view.scrollTo(index)
+                    self.log(f"本地文件搜索匹配成功: {file_name}")  # 记录搜索日志
+                    break
+            else:
+                QMessageBox.information(self, "提示", "未找到匹配的本地文件。")
+                self.log("本地文件搜索无匹配项。")  # 记录无匹配日志
+
+    def delete_file(self):
+        if self.backend_ftp_client and self.is_connected:
+            selected_indexes = self.remote_view.selectedIndexes()
+            if selected_indexes:
+                name_item = self.model.itemFromIndex(selected_indexes[0])
+                file_name = name_item.text()
+                confirm = QMessageBox.question(self, "确认删除", f"确定要删除文件 {file_name} 吗？", QMessageBox.Yes | QMessageBox.No)
+                if confirm == QMessageBox.Yes:
+                    try:
+                        self.backend_ftp_client.send_cmd(f"DELE {file_name}")
+                        self.connection_status_signal.emit(f"删除成功: {file_name}")
+                        self.refresh_remote_files()  # 删除成功后刷新远程文件列表
+                        self.log(f"文件删除成功: {file_name}")  # 记录删除日志
+                    except Exception as e:
+                        error_message = f"删除失败: {str(e)}"
+                        self.connection_status_signal.emit(error_message)
+                        self.log(error_message)  # 记录删除失败日志
+
+    def sort_files(self, logicalIndex):
+        if self.remote_files_info:
+            self.remote_files_info.sort(key=lambda x: x[logicalIndex])
+            self.refresh_remote_files()
+            self.log("远程文件排序成功。")  # 记录排序日志
+
+    def open_context_menu(self, position):
+     if self.is_connected:
+        indexes = self.remote_view.selectedIndexes()
+        if indexes:
+            menu = QMenu()
+            download_action = menu.addAction("下载")
+            transfer_mode_menu = menu.addMenu("选择传输模式")
+            binary_action = transfer_mode_menu.addAction("二进制")
+            text_action = transfer_mode_menu.addAction("文本")
+
+            action = menu.exec_(self.remote_view.viewport().mapToGlobal(position))
+            if action == download_action:
+                # 获取选中的远程文件路径
+                selected_indexes = self.remote_view.selectedIndexes()
+                if selected_indexes:
+                    name_item = self.model.itemFromIndex(selected_indexes[0])
+                    file_name = name_item.text()
+                    # 弹出文件选择对话框让用户选择保存位置
+                    save_path = QFileDialog.getSaveFileName(self, "选择保存位置", file_name)[0]
+                    if save_path:
+                        try:
+                            self.backend_ftp_client.download(file_name, save_path)
+                            self.connection_status_signal.emit(f"下载成功: {file_name}")
+                            self.log(f"文件下载成功: {file_name}")  # 记录下载日志
+                        except Exception as e:
+                            error_message = f"下载失败: {str(e)}"
+                            self.connection_status_signal.emit(error_message)
+                            self.log(error_message)  # 记录下载失败日志
+            elif action == binary_action:
+                self.backend_ftp_client.set_transfer_mode("binary")
+                self.log("传输模式设置为二进制。")  # 记录传输模式日志
+            elif action == text_action:
+                self.backend_ftp_client.set_transfer_mode("text")
+                self.log("传输模式设置为文本。")  # 记录传输模式日志
+
+
+    def show_log(self):
+        # 显示日志窗口
+        log_dialog = QMessageBox(self)
+        log_dialog.setWindowTitle("操作日志")
+        log_dialog.setText("\n".join(self.log_output.toPlainText().splitlines()))
+        log_dialog.exec_()
+
+    def closeEvent(self, event):
+        if self.backend_ftp_client and self.is_connected:
+            self.backend_ftp_client.quit()
+        event.accept()
+    
+    def on_local_view_clicked(self, index):
+        # 获取选中文件的绝对路径
+        file_path = self.local_model.filePath(index)
+        if file_path:
+            # 使用 QDesktopServices 打开文件
+            QDesktopServices.openUrl(QUrl.fromLocalFile(file_path))
+
+    def show_upload_dialog(self, position=None):
+        # 弹出文件选择对话框让用户选择要上传的文件
+        local_file_path, _ = QFileDialog.getOpenFileName(self, "选择要上传的文件")
+        if local_file_path:
+            file_name = os.path.basename(local_file_path)
+            try:
+                # 执行上传操作
+                self.backend_ftp_client.upload(local_file_path, file_name)
+                self.connection_status_signal.emit(f"上传成功: {file_name}")
+                self.refresh_remote_files()  # 刷新远程文件列表
+                self.log(f"文件上传成功: {file_name}")  # 记录上传日志
+            except Exception as e:
+                error_message = f"上传失败: {str(e)}"
+                self.connection_status_signal.emit(error_message)
+                self.log(error_message)  # 记录上传失败日志
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    ftp_client = FTPClient()
-    ftp_client.show()
+    client = FTPClient()
+    client.show()
     sys.exit(app.exec_())
