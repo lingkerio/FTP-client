@@ -1,6 +1,7 @@
 import socket
 import time
 import os
+import traceback
 
 
 class FTPClient:
@@ -84,7 +85,7 @@ class FTPClient:
 
     def send_cmd(self, cmd: str):
         self.s.send(cmd.encode() + b"\r\n")
-        time.sleep(0.01)
+        time.sleep(0.1)
         return
 
     def login(self, username: str = "anonymous", password: str = "anonymous@"):
@@ -114,6 +115,32 @@ class FTPClient:
                 print(self.control_recv_all())
             else:
                 print(response[1])
+        except socket.error as e:
+            print(f"Socket error: {e}")
+            data_socket.close()
+
+    def list_content(self):
+        try:
+            data_socket = self.initialize_data_socket()
+            self.send_cmd("LIST")
+
+            response = self.control_recv_all().split("\r\n")
+            print(response[0])
+
+            data = b""
+            while True:
+                part = data_socket.recv(1024)
+                data += part
+                if len(part) < 1024:
+                    data_socket.close()
+                    break
+            print("Listing complete")
+            if len(response) == 2:
+                print(self.control_recv_all())
+            else:
+                print(response[1])
+                
+            return data.decode()
         except socket.error as e:
             print(f"Socket error: {e}")
             data_socket.close()
@@ -175,26 +202,36 @@ class FTPClient:
             local_filename = remote_filename
 
         try:
-            # 检查远程文件是否是目录
-            self.send_cmd(f"MLST {remote_filename}")
-            response = self.control_recv_all().split("\r\n")
-            if any("type=dir" in line for line in response):
-                # 如果是目录，创建本地目录
+            # 记录当前目录
+            self.send_cmd("PWD")
+            dir_response = self.control_recv_all().split('"')
+            print(dir_response)
+            current_directory = dir_response[1]
+            print(current_directory)
+
+            # 使用CWD命令检查远程文件是否是目录
+            self.send_cmd(f"CWD {remote_filename}")
+            response = self.control_recv_all()
+
+            if response.startswith("250"):
+                # 如果是目录，创建本地目录并返回上一级目录
+                self.send_cmd(f"CWD {current_directory}")
+                self.control_recv_all()
                 if not os.path.exists(local_filename):
                     os.makedirs(local_filename)
 
-                # 使用MLSD命令列出目录内容\
+                # 使用LIST命令列出目录内容
                 data_socket = self.initialize_data_socket()
-                self.send_cmd(f"MLSD {remote_filename}")
-                print(self.control_recv_all())
+                self.send_cmd(f"LIST {remote_filename}")
+                self.control_recv_all()
                 response = self.recv_all_from_data_socket(data_socket).split("\r\n")
                 data_socket.close()
 
                 for line in response:
-                    if line:
-                        parts = line.split(";")
-                        name = parts[-1].strip()
-                        if "type=dir" in parts:
+                    if line and not line.startswith("total"):
+                        parts = line.split()
+                        name = parts[-1]
+                        if line.startswith("d"):
                             self.download(
                                 f"{remote_filename}/{name}", f"{local_filename}/{name}"
                             )
@@ -207,6 +244,7 @@ class FTPClient:
                 self._download_file(remote_filename, local_filename)
         except Exception as e:
             print(f"Download error: {e}")
+            traceback.print_exc()
 
     def _download_file(self, remote_filename: str, local_filename: str):
         local_file_size = 0
@@ -340,7 +378,7 @@ class FTPClient:
 #     client.login(username="anonymous", password="anonymous@")
 #     client.list()
 
-    
+
 #     client.download("src", "srctest")
 
 #     client.quit()
@@ -367,3 +405,10 @@ class FTPClient:
 # # Run the test
 # test_resume_download()
 # # test_resume_upload()
+client = FTPClient(ip="jyywiki.cn", port=21)
+client.login(username="anonymous", password="anonymous@")
+client.list()
+client.change_dir("os")
+client.list()
+
+client.upload("pdm.lock")
