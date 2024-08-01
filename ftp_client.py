@@ -312,7 +312,7 @@ class FTPClient:
 
     def _upload_file(self, local_filename: str, remote_filename: str):
         local_file_size = os.path.getsize(local_filename)
-        remote_file_size = 0
+        remote_file_size = -1  # 初始化为-1，表示远程文件不存在
         data_socket = None
 
         try:
@@ -325,42 +325,55 @@ class FTPClient:
                 # 远程文件不存在
                 remote_file_size = -1
 
-            # 如果远程文件大小为0，说明文件存在但为空
-            if remote_file_size == 0:
-                print(f"{remote_filename} exists on the server but is empty. Uploading from the beginning.")
-                remote_file_size = 0
-
-            # 如果远程文件大小与本地文件大小相同，跳过上传
-            if remote_file_size == local_file_size:
-                print(
-                    f"{remote_filename} already exists on the server with the same size. Skipping upload."
-                )
-                return
-
             # 初始化数据通道
             data_socket = self.initialize_data_socket()
 
-            # 如果远程文件大小小于本地文件大小，进行断点续传
-            if remote_file_size > 0 and remote_file_size < local_file_size:
-                self.send_cmd(f"REST {remote_file_size}")
-                print(self.control_recv_all())
+            # 如果远程文件不存在或大小为0，直接上传完整文件
+            if remote_file_size <= 0:
+                self.send_cmd("STOR " + remote_filename)
+                response = self.control_recv_all()
+                if response.startswith("550"):
+                    print(
+                        f"Failed to upload {remote_filename}. Server response: {response}"
+                    )
+                    return
 
-            self.send_cmd("STOR " + remote_filename)
-            response = self.control_recv_all()
-            if response.startswith("550"):
-                print(
-                    f"Failed to upload {remote_filename}. Server response: {response}"
-                )
-                return
+                with open(local_filename, "rb") as f:
+                    while True:
+                        chunk = f.read(1024)
+                        if not chunk:
+                            break
+                        data_socket.send(chunk)
+                print(f"Uploaded {local_filename} to {remote_filename}")
+            else:
+                # 如果远程文件大小与本地文件大小相同，跳过上传
+                if remote_file_size == local_file_size:
+                    print(
+                        f"{remote_filename} already exists on the server with the same size. Skipping upload."
+                    )
+                    return
 
-            with open(local_filename, "rb") as f:
-                f.seek(remote_file_size)
-                while True:
-                    chunk = f.read(1024)
-                    if not chunk:
-                        break
-                    data_socket.send(chunk)
-            print(f"Uploaded {local_filename} to {remote_filename}")
+                # 如果远程文件大小小于本地文件大小，进行断点续传
+                if remote_file_size > 0 and remote_file_size < local_file_size:
+                    self.send_cmd(f"REST {remote_file_size}")
+                    print(self.control_recv_all())
+
+                self.send_cmd("STOR " + remote_filename)
+                response = self.control_recv_all()
+                if response.startswith("550"):
+                    print(
+                        f"Failed to upload {remote_filename}. Server response: {response}"
+                    )
+                    return
+
+                with open(local_filename, "rb") as f:
+                    f.seek(remote_file_size)
+                    while True:
+                        chunk = f.read(1024)
+                        if not chunk:
+                            break
+                        data_socket.send(chunk)
+                print(f"Uploaded {local_filename} to {remote_filename}")
         except socket.error as e:
             print(f"Socket error: {e}")
         finally:
@@ -405,10 +418,10 @@ class FTPClient:
 # # Run the test
 # test_resume_download()
 # # test_resume_upload()
-client = FTPClient(ip="jyywiki.cn", port=21)
+client = FTPClient(ip="127.0.0.1", port=21)
 client.login(username="anonymous", password="anonymous@")
 client.list()
-client.change_dir("os")
+client.change_dir("src")
 client.list()
 
 client.upload("pdm.lock")
