@@ -50,7 +50,7 @@ class FTPClient(QWidget):
 
     def initUI(self):
         self.setWindowTitle("FTP 客户端")
-        self.setGeometry(400, 100, 1200, 900)  # 增大窗口尺寸以显示日志
+        self.setGeometry(500, 200, 1500, 1000)  # 增大窗口尺寸以显示日志
 
         # 顶部连接栏
         self.host_input = QLineEdit(self)
@@ -121,9 +121,9 @@ class FTPClient(QWidget):
         self.remote_view.setSortingEnabled(True)  # 启用排序功能
 
         splitter = QSplitter(Qt.Horizontal)
-        splitter.setSizes([400, 400]) 
         splitter.addWidget(self.local_view)
         splitter.addWidget(self.remote_view)
+        splitter.setFixedHeight(500)
         
 
         # 工具栏
@@ -137,6 +137,7 @@ class FTPClient(QWidget):
         self.log_output = QTextEdit(self)
         self.log_output.setReadOnly(True)  # 日志只读
         self.log_output.setStyleSheet("background-color: #f5f5f5;")  # 设置背景色
+        
 
         # 主布局
         main_layout = QVBoxLayout()
@@ -232,7 +233,7 @@ class FTPClient(QWidget):
         QPushButton {
             background-color: #0099FF;
             color: white;
-            border-radius: 5px;
+            border-radius: 6px;
             padding: 5px;
         }
         QPushButton:hover {
@@ -243,7 +244,7 @@ class FTPClient(QWidget):
         }
         QStatusBar {
             background-color: #f0f0f0;
-            border-top: 1px solid #ccc;
+            border-top: 10px solid #ccc;
         }
         QTextEdit {
             border: 1px solid #ccc;
@@ -430,23 +431,6 @@ class FTPClient(QWidget):
                     QMessageBox.information(self, "提示", "未找到匹配的本地文件。")
                     self.log("本地文件搜索无匹配项。")  # 记录无匹配日志
 
-    def delete_file(self):
-        if self.backend_ftp_client and self.is_connected:
-            selected_indexes = self.remote_view.selectedIndexes()
-            if selected_indexes:
-                name_item = self.model.itemFromIndex(selected_indexes[0])
-                file_name = name_item.text()
-                confirm = QMessageBox.question(self, "确认删除", f"确定要删除文件 {file_name} 吗？", QMessageBox.Yes | QMessageBox.No)
-                if confirm == QMessageBox.Yes:
-                    try:
-                        self.backend_ftp_client.send_cmd(f"DELE {file_name}")
-                        self.connection_status_signal.emit(f"删除成功: {file_name}")
-                        self.refresh_remote_files()  # 删除成功后刷新远程文件列表
-                        self.log(f"文件删除成功: {file_name}")  # 记录删除日志
-                    except Exception as e:
-                        error_message = f"删除失败: {str(e)}"
-                        self.connection_status_signal.emit(error_message)
-                        self.log(error_message)  # 记录删除失败日志
 
     def sort_files(self, logicalIndex):
         if self.remote_files_info:
